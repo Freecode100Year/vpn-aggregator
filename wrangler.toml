@@ -1,0 +1,13 @@
+name = "proxy-aggregator"
+main = "src/worker.js"
+compatibility_date = "2024-09-01"
+workers_dev = false
+
+routes = [{ pattern = "vpn.freedom8964.com", custom_domain = true }]
+
+[[kv_namespaces]]
+binding = "PROXY_KV"
+id = "2154741e6a60407ea115104884c25ff4"
+
+[triggers]
+crons = ["0 18 * * *"]
