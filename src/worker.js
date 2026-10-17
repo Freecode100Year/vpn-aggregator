@@ -40,7 +40,7 @@ var SOURCE_URLS = [
   "https://raw.githubusercontent.com/free18/v2ray/main/v.txt"
 ];
 // 采集间隔：与 wrangler.toml 的 crons 保持一致
-var EVERY_HOURS = 3;
+var EVERY_HOURS = 24;
 // 手动 /refresh 至少间隔这么久，防止被人反复触发
 var REFRESH_GAP_MS = 10 * 60 * 1000;
 function datedSourceUrls(daysBack = 1) {

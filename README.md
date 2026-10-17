@@ -6,7 +6,7 @@
 
 ## 功能
 
-- **自动采集**：每 3 小时一次（Cron `0 */3 * * *`），并发抓取 `src/worker.js` 里 `SOURCE_URLS` 列出的源。支持纯文本、Base64 和 Clash YAML 三种格式，协议有 vmess、vless（含 reality）、trojan、ss、ssr、hysteria2 和 tuic。
+- **自动采集**：每 24 小时一次（Cron `0 18 * * *`，北京时间每天 02:00），并发抓取 `src/worker.js` 里 `SOURCE_URLS` 列出的源。支持纯文本、Base64 和 Clash YAML 三种格式，协议有 vmess、vless（含 reality）、trojan、ss、ssr、hysteria2 和 tuic。
 - **查重**（`src/dedupe.js`）：只要协议、服务器、端口、凭据和传输参数都相同，就算同一个节点。节点名、链接里参数的顺序、大小写和默认路径的写法都不影响判断。重复的只保留最先找到的一条，源在列表里越靠前，优先级越高。
 - **采集报告**：页面底部列出每个源找到多少条、查重后新增多少条。
 - **订阅地址**：

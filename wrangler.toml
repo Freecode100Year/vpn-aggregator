@@ -10,4 +10,4 @@ binding = "PROXY_KV"
 id = "2154741e6a60407ea115104884c25ff4"
 
 [triggers]
-crons = ["0 */3 * * *"]
+crons = ["0 18 * * *"]
