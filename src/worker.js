@@ -228,6 +228,15 @@ async function handleFetch(request, env, ctx) {
     </a>
   </div>
 
+  <!-- 作者的开源项目 -->
+  <nav class="bg-gray-800 text-gray-300 text-xs py-2 px-4 flex flex-wrap justify-center gap-x-4 gap-y-1">
+    <span class="text-gray-400">GitHub 开源项目：</span>
+    <a href="https://github.com/Freecode100Year/vpn-aggregator" target="_blank" rel="noopener" class="underline hover:text-white">本站源码</a>
+    <a href="https://github.com/Freecode100Year/private-talk" target="_blank" rel="noopener" class="underline hover:text-white">隐匿对话</a>
+    <a href="https://github.com/Freecode100Year/UltraLightBrowser" target="_blank" rel="noopener" class="underline hover:text-white">UltraLightBrowser</a>
+    <a href="https://github.com/Freecode100Year/WarpGameBoost" target="_blank" rel="noopener" class="underline hover:text-white">WarpGameBoost</a>
+  </nav>
+
   <header class="bg-white shadow sticky top-0 z-10">
     <div class="max-w-5xl mx-auto px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
       <div>
