@@ -1,3 +1,6 @@
+import { PROTOCOLS, protocolOf, addUnique } from './dedupe.js';
+import { extractLinks, parseClashYaml } from './parse.js';
+
 var SOURCE_URLS = [
   // --- 纯文本 / Base64 格式 ---
   "https://raw.githubusercontent.com/freefq/free/master/v2",
@@ -12,10 +15,8 @@ var SOURCE_URLS = [
   "https://raw.githubusercontent.com/chengaopan/AutoMergePublicNodes/master/list.yml",
   "https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.yml",
   // 稳定源
-  "https://raw.githubusercontent.com/SnapdragonLee/SystemProxy/master/dist/clash_config.yaml",
   "https://raw.githubusercontent.com/SnapdragonLee/SystemProxy/master/dist/clash_config_extra.yaml",
   "https://raw.githubusercontent.com/Ruk1ng001/freeSub/main/clash.yaml",
-  "https://raw.githubusercontent.com/mfuu/v2ray/master/clash.yaml",
   "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/clash.yml",
   // --- 2026-08 新增（均已实测能解析出节点）---
   // 非 GitHub 源，节点量最大
@@ -29,8 +30,19 @@ var SOURCE_URLS = [
   // 同仓库的 v2ray-2.txt 是同一批节点的另一种格式，不重复添加
   "https://raw.githubusercontent.com/snakem982/proxypool/main/source/clash-meta-2.yaml",
   "https://raw.githubusercontent.com/itxve/fetch-clash-node/main/node/merge.yaml",
-  "https://raw.githubusercontent.com/itxve/fetch-clash-node/main/node/NodeFree.yaml"
+  "https://raw.githubusercontent.com/itxve/fetch-clash-node/main/node/NodeFree.yaml",
+  // --- 2026-10 新增（均已实测可下载）---
+  // 三轮真实流量验证后的节点，每 15 分钟更新
+  "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs_base64.txt",
+  // 经典聚合，每日更新
+  "https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/all",
+  // 每日更新
+  "https://raw.githubusercontent.com/free18/v2ray/main/v.txt"
 ];
+// 采集间隔：与 wrangler.toml 的 crons 保持一致
+var EVERY_HOURS = 3;
+// 手动 /refresh 至少间隔这么久，防止被人反复触发
+var REFRESH_GAP_MS = 10 * 60 * 1000;
 function datedSourceUrls(daysBack = 1) {
   const urls = [];
   const now = Date.now();
@@ -45,135 +57,52 @@ var PAGE_SIZE = 200;
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-function extractLinks(text) {
-  const links = new Set();
-  const makeRe = () => /(?:vmess|vless|ss|ssr|trojan):\/\/[^\s'"<>]+/gi;
-  const re1 = makeRe();
-  let m;
-  while ((m = re1.exec(text)) !== null) links.add(m[0]);
-  for (const line of text.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t || !/^[A-Za-z0-9+/]+={0,2}$/.test(t) || t.length % 4 !== 0) continue;
-    try {
-      const decoded = atob(t);
-      const re2 = makeRe();
-      let m2;
-      while ((m2 = re2.exec(decoded)) !== null) links.add(m2[0]);
-    } catch (_) {
-    }
-  }
-  return Array.from(links);
-}
-function proxyToUri(raw) {
-  const get = (key) => {
-    const m = raw.match(new RegExp(
-      `(?:^|[\\n,{])\\s*${key}:\\s*['"]?([^,'"{}
-]+?)['"]?(?=\\s*[,}\\n]|$)`,
-      "i"
-    ));
-    return m ? m[1].trim().replace(/^['"]|['"]$/g, "") : "";
-  };
-  const type = get("type");
-  const name = get("name") || "node";
-  const server = get("server");
-  const port = get("port");
-  if (!type || !server || !port) return null;
-  try {
-    if (type === "vmess") {
-      const wsPath = raw.match(/\bpath:\s*['"]?([^\s,'"{}]+)/)?.[1] || "/";
-      const wsHost = raw.match(/\bHost:\s*['"]?([^\s,'"{}]+)/)?.[1] || get("servername") || server;
-      const cfg = {
-        v: "2",
-        ps: name,
-        add: server,
-        port: String(port),
-        id: get("uuid"),
-        aid: get("alterId") || "0",
-        net: get("network") || "tcp",
-        type: "none",
-        host: wsHost,
-        path: wsPath,
-        tls: /\btls:\s*true\b/i.test(raw) ? "tls" : ""
-      };
-      return "vmess://" + btoa(unescape(encodeURIComponent(JSON.stringify(cfg))));
-    }
-    if (type === "ss") {
-      const cred = btoa(unescape(encodeURIComponent(`${get("cipher")}:${get("password")}`)));
-      return `ss://${cred}@${server}:${port}#${encodeURIComponent(name)}`;
-    }
-    if (type === "trojan") {
-      return `trojan://${get("password")}@${server}:${port}#${encodeURIComponent(name)}`;
-    }
-    if (type === "vless") {
-      const net = get("network") || "tcp";
-      const sec = /\btls:\s*true\b/i.test(raw) ? "tls" : "none";
-      return `vless://${get("uuid")}@${server}:${port}?type=${net}&security=${sec}#${encodeURIComponent(name)}`;
-    }
-  } catch (_) {
-  }
-  return null;
-}
-function parseClashYaml(text) {
-  const links = [];
-  let body = text;
-  const parts = text.split(/^(?=[a-zA-Z][\w-]*:\s*(?:\n|$))/m);
-  for (const part of parts) {
-    if (/^proxies:\s*\n/.test(part)) {
-      body = part.replace(/^proxies:\s*\n/, "");
-      break;
-    }
-  }
-  const flowRe = /^\s*-\s*\{([^}]+)\}/gm;
-  let fm;
-  while ((fm = flowRe.exec(body)) !== null) {
-    const uri = proxyToUri(fm[1]);
-    if (uri) links.push(uri);
-  }
-  const entryPositions = [];
-  const entryRe = /^[ \t]*-[ \t]+name:/gm;
-  let em;
-  while ((em = entryRe.exec(body)) !== null) entryPositions.push(em.index);
-  for (let i = 0; i < entryPositions.length; i++) {
-    const block = body.slice(entryPositions[i], entryPositions[i + 1] ?? body.length);
-    const uri = proxyToUri(block);
-    if (uri) links.push(uri);
-  }
-  return links;
-}
+// 并发抓取所有源，按节点身份查重（见 dedupe.js）：同一节点换了名字、
+// 参数顺序不同，也只保留最先找到的一条。源的顺序就是优先级。
 async function fetchAndParseSources() {
-  const allLinks = new Set();
-  const logs = [];
-  for (const url of [...SOURCE_URLS, ...datedSourceUrls()]) {
-    const shortUrl = url.replace("https://raw.githubusercontent.com/", "");
+  const urls = [...new Set([...SOURCE_URLS, ...datedSourceUrls()])];
+  const results = await Promise.all(urls.map(async (url) => {
     try {
       const resp = await fetch(url, { cf: { cacheTtl: 0 } });
-      if (!resp.ok) {
-        logs.push(`\u274C HTTP ${resp.status}  ${shortUrl}`);
-        continue;
-      }
+      if (!resp.ok) return { url, error: `HTTP ${resp.status}` };
       const text = await resp.text();
       const isYaml = /\.ya?ml$/i.test(url) || /^proxies:/m.test(text);
-      const links = isYaml ? parseClashYaml(text) : extractLinks(text);
-      links.forEach((l) => allLinks.add(l));
-      const fmt = isYaml ? "YAML" : "URI";
-      logs.push(`\u2705 [${fmt}] ${links.length} \u6761  ${shortUrl}`);
+      return { url, fmt: isYaml ? "YAML" : "URI", links: isYaml ? parseClashYaml(text) : extractLinks(text) };
     } catch (err) {
-      logs.push(`\u{1F4A5} \u9519\u8BEF: ${err.message}  ${shortUrl}`);
+      return { url, error: err.message };
     }
+  }));
+  const seen = new Map();
+  const logs = [];
+  const sources = [];
+  let found = 0;
+  for (const r of results) {
+    const shortUrl = r.url.replace("https://raw.githubusercontent.com/", "");
+    if (r.error) {
+      logs.push(`\u274C ${r.error}  ${shortUrl}`);
+      sources.push({ url: r.url, error: r.error });
+      continue;
+    }
+    const added = addUnique(seen, r.links);
+    found += r.links.length;
+    logs.push(`\u2705 [${r.fmt}] ${r.links.length} 条，新增 ${added}  ${shortUrl}`);
+    sources.push({ url: r.url, found: r.links.length, added });
   }
-  const categorized = { vmess: [], vless: [], ss: [], ssr: [], trojan: [] };
-  for (const link of allLinks) {
-    const proto = link.split("://")[0];
-    if (proto in categorized) categorized[proto].push(link);
-  }
+  const categorized = Object.fromEntries(PROTOCOLS.map((p) => [p, []]));
+  for (const link of seen.values()) categorized[protocolOf(link)]?.push(link);
   Object.keys(categorized).forEach((k) => categorized[k].sort());
-  return { lastUpdated: (new Date()).toISOString(), data: categorized, logs };
+  const stats = { found, unique: seen.size, sources };
+  return { lastUpdated: (new Date()).toISOString(), data: categorized, stats, logs };
+}
+async function save(env, payload) {
+  await env.PROXY_KV.put("data", JSON.stringify(payload.data));
+  await env.PROXY_KV.put("stats", JSON.stringify(payload.stats));
+  await env.PROXY_KV.put("lastUpdated", payload.lastUpdated);
 }
 async function scheduled(event, env, ctx) {
   try {
     const payload = await fetchAndParseSources();
-    await env.PROXY_KV.put("lastUpdated", payload.lastUpdated);
-    await env.PROXY_KV.put("data", JSON.stringify(payload.data));
+    await save(env, payload);
     console.log("[CRON] \u8282\u70B9\u5DF2\u66F4\u65B0\u5E76\u5199\u5165 KV\u3002");
   } catch (e) {
     console.error("[CRON] \u66F4\u65B0\u5931\u8D25:", e);
@@ -185,14 +114,21 @@ async function handleFetch(request, env, ctx) {
   }
   const url = new URL(request.url);
   if (url.pathname === "/refresh") {
+    const last = Date.parse(await env.PROXY_KV.get("lastUpdated") || "") || 0;
+    if (Date.now() - last < REFRESH_GAP_MS) {
+      const s = Math.ceil((last + REFRESH_GAP_MS - Date.now()) / 1000);
+      return new Response(`刚更新过，${s} 秒后才能再次手动更新。`, {
+        status: 429,
+        headers: { "Content-Type": "text/plain;charset=UTF-8", "Cache-Control": "no-store", "Retry-After": String(s) }
+      });
+    }
     try {
       const payload = await fetchAndParseSources();
-      await env.PROXY_KV.put("lastUpdated", payload.lastUpdated);
-      await env.PROXY_KV.put("data", JSON.stringify(payload.data));
-      const total = Object.values(payload.data).reduce((s, l) => s + l.length, 0);
+      await save(env, payload);
+      const { found, unique } = payload.stats;
       const report = payload.logs.join("\n") + `
 
-\u5171\u6293\u53D6 ${total} \u4E2A\u8282\u70B9\uFF08\u53BB\u91CD\u540E\uFF09`;
+共采集 ${found} 条，查重去掉 ${found - unique} 条，剩 ${unique} 个节点`;
       return new Response(report, {
         status: 200,
         headers: { "Content-Type": "text/plain;charset=UTF-8", "Cache-Control": "no-store" }
@@ -217,7 +153,7 @@ async function handleFetch(request, env, ctx) {
 <body class="bg-gray-50 flex min-h-screen items-center justify-center">
   <div class="text-center p-8 bg-white rounded-xl shadow">
     <h2 class="text-xl font-semibold mb-3">\u8282\u70B9\u5217\u8868\u6B63\u5728\u9996\u6B21\u66F4\u65B0\uFF0C\u8BF7\u7A0D\u540E\u5237\u65B0\u9875\u9762</h2>
-    <p class="text-sm text-gray-500">\u5B9A\u65F6\u4EFB\u52A1\u6BCF\u5929\u5317\u4EAC\u65F6\u95F4 02:00 \u81EA\u52A8\u8FD0\u884C\u3002</p>
+    <p class="text-sm text-gray-500">定时任务每 ${EVERY_HOURS} 小时自动运行一次。</p>
     <p class="text-sm text-gray-400 mt-2">\u5982\u9700\u7ACB\u5373\u83B7\u53D6\u6570\u636E\uFF0C\u8BF7\u524D\u5F80 Cloudflare Dashboard \u624B\u52A8\u89E6\u53D1\u4E00\u6B21\u5B9A\u65F6\u4EFB\u52A1\u3002</p>
   </div>
 </body>
@@ -232,7 +168,7 @@ async function handleFetch(request, env, ctx) {
   const listOf = (proto) => Array.isArray(data[proto]) ? data[proto] : [];
   const apiHeaders = (contentType) => ({
     "Content-Type": contentType,
-    // 数据每天才更新一次，让边缘替我们扛住懒加载的请求量
+    // 数据几小时才更新一次，让边缘替我们扛住懒加载的请求量
     "Cache-Control": "public, max-age=300"
   });
   if (url.pathname === "/api/nodes") {
@@ -243,6 +179,15 @@ async function handleFetch(request, env, ctx) {
       JSON.stringify({ items: list.slice(offset, offset + limit), total: list.length }),
       { status: 200, headers: apiHeaders("application/json;charset=UTF-8") }
     );
+  }
+  // 订阅地址：所有节点（或 ?proto= 一种）的 Base64，可直接填进 v2rayN 等客户端
+  if (url.pathname === "/sub") {
+    const proto = url.searchParams.get("proto");
+    const links = proto ? listOf(proto) : Object.values(data).flat();
+    const bytes = new TextEncoder().encode(links.join("\n"));
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode(...bytes.subarray(i, i + 32768));
+    return new Response(btoa(bin), { status: 200, headers: apiHeaders("text/plain;charset=UTF-8") });
   }
   if (url.pathname === "/api/all") {
     return new Response(
@@ -260,6 +205,9 @@ async function handleFetch(request, env, ctx) {
     second: "2-digit"
   });
   const totalCount = Object.values(data).reduce((s, l) => s + l.length, 0);
+  let stats = null;
+  try { stats = JSON.parse(await env.PROXY_KV.get("stats", { cacheTtl: 300 }) || "null"); } catch (_) {}
+  const origin = "https://" + url.host;
   const categories = Object.entries(data).filter(([, list]) => list.length > 0);
   const html = `<!doctype html>
 <html lang="zh-CN" class="scroll-smooth">
@@ -285,7 +233,8 @@ async function handleFetch(request, env, ctx) {
       <div>
         <h1 class="text-xl font-bold text-gray-800">\u514D\u8D39\u8282\u70B9\u805A\u5408</h1>
         <p class="text-sm text-gray-500">
-          \u5171 <span class="font-semibold text-blue-600">${totalCount}</span> \u4E2A\u8282\u70B9
+          \u5171 <span class="font-semibold text-blue-600">${totalCount}</span> \u4E2A\u8282\u70B9${stats ? `
+          <span class="text-gray-400">（采集 ${stats.found} 条，查重去掉 ${stats.found - stats.unique} 条）</span>` : ""}
         </p>
       </div>
       <p class="text-xs text-gray-400">\u6700\u540E\u66F4\u65B0\uFF1A${formattedTime}\uFF08\u5317\u4EAC\u65F6\u95F4\uFF09</p>
@@ -293,6 +242,10 @@ async function handleFetch(request, env, ctx) {
   </header>
 
   <main class="flex-1 max-w-5xl mx-auto px-4 py-6 w-full">
+    <div class="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 space-y-1">
+      <p>⚠️ 这些都是陌生人搭的公开节点：对方能看到你访问了哪些网站，能截获没有加密的内容，也可能随时失效。只用 HTTPS 网站，不要拿来登录重要账号或传敏感内容。</p>
+      <p>订阅地址（每 ${EVERY_HOURS} 小时自动更新、已查重）：<code class="select-all break-all">${escapeHtml(origin)}/sub</code>　单一协议在后面加 <code>?proto=vless</code> 等。</p>
+    </div>
     <div class="space-y-8">
       ${categories.map(([proto, list]) => `
       <section>
@@ -325,8 +278,18 @@ async function handleFetch(request, env, ctx) {
     </div>
   </main>
 
+  ${stats ? `
+  <section class="max-w-5xl mx-auto px-4 w-full">
+    <details class="bg-white border border-gray-200 rounded-lg p-3 text-xs text-gray-600">
+      <summary class="cursor-pointer font-semibold">采集源（${stats.sources.length} 个）· 每个源找到 / 查重后新增</summary>
+      <ul class="mt-2 space-y-1 font-mono break-all">
+        ${stats.sources.map((x) => `<li>${x.error ? `❌ ${escapeHtml(x.error)}` : `${x.found} / ${x.added}`}　<a class="text-blue-600 hover:underline" href="${escapeHtml(x.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(x.url.replace("https://raw.githubusercontent.com/", ""))}</a></li>`).join("")}
+      </ul>
+    </details>
+  </section>` : ""}
+
   <footer class="mt-8 bg-white border-t px-4 py-3 text-center text-xs text-gray-400">
-    \u6570\u636E\u6765\u6E90\u4E8E\u516C\u5F00 GitHub \u4ED3\u5E93 \xB7 \u4EC5\u4F9B\u5B66\u4E60\u7814\u7A76\uFF0C\u8BF7\u9075\u5B88\u5F53\u5730\u6CD5\u5F8B\u6CD5\u89C4
+    \u6570\u636E\u6765\u6E90\u4E8E\u516C\u5F00 GitHub \u4ED3\u5E93 \xB7 \u4EC5\u4F9B\u5B66\u4E60\u7814\u7A76\uFF0C\u8BF7\u9075\u5B88\u5F53\u5730\u6CD5\u5F8B\u6CD5\u89C4 · <a class="underline" href="https://github.com/Freecode100Year/vpn-aggregator" target="_blank" rel="noopener">源代码</a>
   </footer>
 
   <script>
